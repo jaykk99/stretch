@@ -1,0 +1,10 @@
+# built binaries at repo root
+stretchstore
+stretchmem
+stretchcpu
+stretchnet
+# release build output (ships as GitHub release assets, not in git)
+dist/
+# local temp volume for self-tests
+.stretch-test/
+*.test
