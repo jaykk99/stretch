@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -150,5 +151,55 @@ func TestHTTPErrorNotCached(t *testing.T) {
 	st := c.Stats()
 	if st.URLs != 0 || st.NetworkFetches != 0 {
 		t.Fatal("failed fetch was cached/counted")
+	}
+}
+
+func TestConcurrentFetchSharesOneDownload(t *testing.T) {
+	var hits atomic.Int64
+	body := bytes.Repeat([]byte("shared download. "), 200000) // ~3.4MB
+	srv := testServer(t, &hits, body)
+	defer srv.Close()
+
+	c, err := New(filepath.Join(t.TempDir(), "cache"), srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 16
+	type res struct {
+		body      []byte
+		fromCache bool
+		err       error
+	}
+	out := make([]res, n)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // release all goroutines at once
+			b, fc, err := c.Fetch(srv.URL+"/shared", false)
+			out[i] = res{b, fc, err}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, r := range out {
+		if r.err != nil {
+			t.Fatalf("fetch %d: %v", i, r.err)
+		}
+		if !bytes.Equal(r.body, body) {
+			t.Fatalf("fetch %d: bytes differ", i)
+		}
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("server hit %d times, want exactly 1 (concurrent fetches must share one download)", got)
+	}
+	st := c.Stats()
+	if st.NetworkFetches != 1 {
+		t.Fatalf("NetworkFetches = %d, want 1", st.NetworkFetches)
+	}
+	if st.CacheHits != n-1 {
+		t.Fatalf("CacheHits = %d, want %d (waiters avoided a transfer)", st.CacheHits, n-1)
 	}
 }

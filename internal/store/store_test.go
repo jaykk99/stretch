@@ -291,3 +291,119 @@ func TestPartialOverwriteKeepsRest(t *testing.T) {
 		}
 	}
 }
+
+func TestMidFileManifestCorruptionRefusesOpen(t *testing.T) {
+	dir := t.TempDir()
+	volDir := filepath.Join(dir, "vol")
+	st, err := Create(volDir, 10<<30, 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.WriteAt([]byte("first write"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.WriteAt([]byte("second write"), 1<<20); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Corrupt one byte in the MIDDLE of the first journal record's body.
+	// The CRC now fails mid-file: this is corruption of acknowledged data,
+	// not a torn tail, so Open must refuse loudly instead of silently
+	// discarding everything after it.
+	mp := filepath.Join(volDir, "manifest.log")
+	data, err := os.ReadFile(mp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) < 32 {
+		t.Fatalf("manifest too short: %d", len(data))
+	}
+	data[4+2] ^= 0xFF
+	if err := os.WriteFile(mp, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(volDir); err == nil {
+		t.Fatal("Open succeeded on mid-file manifest corruption: acknowledged data would be silently dropped")
+	} else if !bytes.Contains([]byte(err.Error()), []byte("corrupt")) {
+		t.Fatalf("unexpected error (want corruption complaint): %v", err)
+	}
+}
+
+func TestMidFileChunkCorruptionRefusesOpen(t *testing.T) {
+	dir := t.TempDir()
+	volDir := filepath.Join(dir, "vol")
+	st, err := Create(volDir, 10<<30, 1<<30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := make([]byte, 200<<10)
+	if _, err := rand.Read(chunk); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.WriteAt(chunk, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.WriteAt(chunk, 1<<20); err != nil { // second blob, same bytes dedup
+		t.Fatal(err)
+	}
+	other := make([]byte, 200<<10)
+	if _, err := rand.Read(other); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.WriteAt(other, 2<<20); err != nil { // third blob, distinct
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// Zero the FIRST blob's length prefix: a zero length mid-file can never
+	// come from a crash (the writer never emits one), so this is corruption.
+	cp := filepath.Join(volDir, "chunks.dat")
+	data, err := os.ReadFile(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		data[i] = 0
+	}
+	if err := os.WriteFile(cp, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(volDir); err == nil {
+		t.Fatal("Open succeeded on mid-file chunk corruption")
+	} else if !bytes.Contains([]byte(err.Error()), []byte("corrupt")) {
+		t.Fatalf("unexpected error (want corruption complaint): %v", err)
+	}
+}
+
+func TestPhysicalCapNeverExceeded(t *testing.T) {
+	// The budget check must be exact: many small writes that each advance
+	// the high-water mark must never push real usage past the cap.
+	st, _ := testVol(t, 100<<20, 1<<20)
+	defer st.Close()
+	rngData := make([]byte, 1<<10)
+	var off int64
+	for i := 0; i < 5000; i++ {
+		if _, err := rand.Read(rngData); err != nil {
+			t.Fatal(err)
+		}
+		_, err := st.WriteAt(rngData, off)
+		if errors.Is(err, ErrNoSpace) {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		off += int64(len(rngData))
+		s := st.Status()
+		if s.PhysicalUsed > s.PhysicalLimit {
+			t.Fatalf("physical %d exceeded limit %d after %d writes", s.PhysicalUsed, s.PhysicalLimit, i+1)
+		}
+	}
+	s := st.Status()
+	if s.PhysicalUsed > s.PhysicalLimit {
+		t.Fatalf("final physical %d exceeded limit %d", s.PhysicalUsed, s.PhysicalLimit)
+	}
+}

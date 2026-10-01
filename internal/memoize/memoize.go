@@ -28,6 +28,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -100,6 +101,7 @@ type Stats struct {
 }
 
 type Cache struct {
+	mu    sync.Mutex // guards jobs on disk, stats, and the stats file
 	dir   string
 	jobs  string
 	exec  Executor
@@ -162,10 +164,15 @@ func (c *Cache) load(id string) (Result, bool) {
 }
 
 // Run executes the job or returns the cached result. hit reports which.
+// It is safe for concurrent use: the whole check-execute-store sequence is
+// serialized, so two goroutines racing the same job produce one execution
+// and one cache hit, never a torn entry or a stats race.
 func (c *Cache) Run(argv []string, stdin []byte) (res Result, hit bool, err error) {
 	if len(stdin) > MaxStdin {
 		return Result{}, false, fmt.Errorf("stdin exceeds %d bytes", MaxStdin)
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	id := JobID(argv, stdin)
 	if res, ok := c.load(id); ok {
 		c.stats.Hits++
@@ -198,6 +205,8 @@ func (c *Cache) Run(argv []string, stdin []byte) (res Result, hit bool, err erro
 
 // Stats returns cumulative hit/miss accounting plus current cache size.
 func (c *Cache) Stats() Stats {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	st := c.stats
 	var total uint64
 	filepath.Walk(c.jobs, func(_ string, info os.FileInfo, err error) error {
@@ -212,6 +221,8 @@ func (c *Cache) Stats() Stats {
 
 // Clear wipes all cached results (stats are kept).
 func (c *Cache) Clear() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	ents, err := os.ReadDir(c.jobs)
 	if err != nil {
 		return err

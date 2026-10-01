@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"sync/atomic"
 
+	"stretchstore/internal/cliutil"
 	"stretchstore/internal/netcache"
 	"stretchstore/internal/size"
 )
@@ -30,6 +31,9 @@ func defaultDir() string {
 	}
 	return filepath.Join(os.TempDir(), "stretchnet")
 }
+
+// subcommands lists every top-level command, for help and completions.
+var subcommands = []string{"fetch", "stats", "clear", "test", "help", "version", "completion"}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -46,6 +50,12 @@ func main() {
 		err = cmdClear(os.Args[2:])
 	case "test":
 		err = cmdTest(os.Args[2:])
+	case "version":
+		fmt.Println(cliutil.VersionLine("stretchnet"))
+	case "completion":
+		err = cmdCompletion(os.Args[2:])
+	case "-h", "--help", "help":
+		usage()
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
 		usage()
@@ -55,6 +65,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func cmdCompletion(args []string) error {
+	shell := "bash"
+	if len(args) > 0 {
+		shell = args[0]
+	}
+	out, err := cliutil.Completion("stretchnet", subcommands, shell)
+	if err != nil {
+		return err
+	}
+	fmt.Print(out)
+	return nil
 }
 
 func usage() {
@@ -68,6 +91,8 @@ Usage:
   stretchnet stats [--dir DIR]
   stretchnet clear [--dir DIR]
   stretchnet test
+  stretchnet version
+  stretchnet completion [bash|zsh|fish]   (shell completions on stdout)
 `)
 }
 

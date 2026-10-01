@@ -17,10 +17,15 @@ import (
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
+	"stretchstore/internal/cliutil"
 	"stretchstore/internal/size"
 	"stretchstore/internal/store"
 )
+
+// subcommands lists every top-level command, for help and completions.
+var subcommands = []string{"create", "mount", "status", "serve", "test", "help", "version", "completion"}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -39,6 +44,10 @@ func main() {
 		err = cmdServe(os.Args[2:])
 	case "test":
 		err = cmdTest(os.Args[2:])
+	case "version":
+		fmt.Println(cliutil.VersionLine("stretchstore"))
+	case "completion":
+		err = cmdCompletion(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 	default:
@@ -50,6 +59,19 @@ func main() {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func cmdCompletion(args []string) error {
+	shell := "bash"
+	if len(args) > 0 {
+		shell = args[0]
+	}
+	out, err := cliutil.Completion("stretchstore", subcommands, shell)
+	if err != nil {
+		return err
+	}
+	fmt.Print(out)
+	return nil
 }
 
 func usage() {
@@ -65,6 +87,8 @@ Usage:
   stretchstore serve  --dir ./vol [--addr 127.0.0.1:8080]  (HTTP/WebDAV fallback, all OSes)
   stretchstore status --dir ./vol
   stretchstore test   [--dir ./vol] [--logical 1000GB] [--physical 1GB]
+  stretchstore version
+  stretchstore completion [bash|zsh|fish]   (shell completions on stdout)
 
 On machines without FUSE (Windows builds, Android/Termux, minimal
 containers), use "serve": the volume appears as a virtual disk.img over
@@ -120,7 +144,7 @@ func printStatus(s store.Status) {
 	fmt.Printf("physical used:   %s / %s (%.1f%%)\n", size.Format(s.PhysicalUsed), size.Format(s.PhysicalLimit),
 		100*float64(s.PhysicalUsed)/float64(s.PhysicalLimit))
 	fmt.Printf("unique chunks:   %d (%d references)\n", s.UniqueChunks, s.ChunkRefs)
-	if s.PhysicalUsed > 0 {
+	if s.LogicalMapped > 0 {
 		fmt.Printf("real ratio:      %.1f:1\n", s.Ratio())
 	} else {
 		fmt.Printf("real ratio:      n/a (nothing stored yet)\n")
@@ -284,7 +308,8 @@ func cmdTest(args []string) error {
 	// Fill test: keep writing random until a physical wall. Our own 1GB cap
 	// refuses honestly with ErrNoSpace; if the underlying disk fills first,
 	// the OS error is equally real and equally terminal.
-	fmt.Printf("      filling physical store to prove the limit is real ...")
+	fmt.Printf("      filling physical store to prove the limit is real ...\n")
+	prog := cliutil.NewProgress(os.Stdout, "fill", 5*time.Second)
 	fillOff := off + int64(len(advers))
 	fillChunk := make([]byte, 32<<20)
 	var fillWrote uint64
@@ -305,12 +330,14 @@ func cmdTest(args []string) error {
 			return fmt.Errorf("fill write: %w", err)
 		}
 		fillWrote += uint64(n)
+		prog.Add(uint64(n))
 	}
+	prog.Done()
 	// Previously written data must still be intact after the refusal.
 	if err := verifyEqual(st, off, advers); err != nil {
 		return fmt.Errorf("post-fill integrity: %w", err)
 	}
-	fmt.Printf(" refused at %s physical (%s wall, data intact)\n", size.Format(st.Status().PhysicalUsed), wallKind)
+	fmt.Printf("      refused at %s physical (%s wall, data intact)\n", size.Format(st.Status().PhysicalUsed), wallKind)
 
 	// Report.
 	fmt.Println("\n================ HONEST REPORT ================")

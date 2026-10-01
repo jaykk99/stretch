@@ -94,6 +94,8 @@ stretchstore status --dir ./vol     # the truth: logical vs physical
 stretchstore mount  --dir ./vol --mp /mnt/stretch     # FUSE (Linux/macOS)
 stretchstore serve  --dir ./vol [--addr 127.0.0.1:8080]  # no-FUSE fallback
 stretchstore test                   # autonomous self-test, honest report
+stretchstore version                # print version
+stretchstore completion [bash|zsh|fish]  # shell completions
 ```
 
 **No-FUSE mode** (`serve`): the volume appears as a virtual `disk.img` over
@@ -120,6 +122,8 @@ Zero pages cost nothing. Hard physical cap — writes that don't fit are refused
 
 ```bash
 stretchmem test [--cap 512MB]   # autonomous self-test, honest report
+stretchmem version
+stretchmem completion [bash|zsh|fish]
 ```
 
 **Measured** (`stretchmem test`, 512MB cap — real run):
@@ -142,6 +146,8 @@ not make cores faster and does nothing for unique work.
 stretchcpu run --dir ~/.cache/stretchcpu -- <cmd> [args...] < stdin
 stretchcpu stats | stretchcpu clear
 stretchcpu test        # 1000x the same expensive job, honest report
+stretchcpu version
+stretchcpu completion [bash|zsh|fish]
 ```
 
 **Measured** (`stretchcpu test` — real run): 1000 submissions of a
@@ -162,6 +168,8 @@ Bandwidth accounting tracks every byte saved.
 stretchnet fetch [--refresh] <url>   # body -> stdout, HIT/MISS -> stderr
 stretchnet stats | stretchnet clear
 stretchnet test                      # 100x fetch, honest report
+stretchnet version
+stretchnet completion [bash|zsh|fish]
 ```
 
 **Measured** (`stretchnet test` — real run, local server): 100 fetches of a
@@ -176,7 +184,7 @@ as-is until `--refresh`. Don't cache things that change every request.
 ## Building releases
 
 ```bash
-./scripts/make-release.sh 0.1.0   # -> dist/*.tar.gz + SHA256SUMS.txt
+./scripts/make-release.sh 0.2.0   # -> dist/*.tar.gz + SHA256SUMS.txt
 ```
 
 Cross-compile matrix (all `CGO_ENABLED=0`, static):
@@ -198,8 +206,13 @@ compile and vet is clean, every device above can run the suite.
 - **Crash safety:** `chunks.dat` and `manifest.log` are append-only; blobs,
   then journal records, then fsyncs — in that order. A torn tail is truncated
   on open; unacknowledged writes are dropped, which is always safe.
+  Corruption in the *middle* of either file is not a crash artifact, so
+  `Open` refuses with an error instead of silently discarding acknowledged
+  data.
 - **Write atomicity vs. the cap:** the physical budget is checked *before*
-  any mutation. A write either fits entirely or is refused (`ENOSPC`).
+  any mutation, measured exactly (chunk blobs + every journal byte). A write
+  either fits entirely or is refused (`ENOSPC`); usage can never creep past
+  the cap.
 - **Granularity:** 1MB logical slots, independently re-chunked per write
   (avg 64KB chunks).
 - **No compaction (yet):** dereferenced chunks aren't reclaimed — overwriting

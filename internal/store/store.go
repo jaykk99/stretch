@@ -193,45 +193,66 @@ func Open(dir string) (*Store, error) {
 }
 
 // replayChunks scans chunks.dat, rebuilding the chunk index and truncating
-// a torn tail record.
+// a torn tail record left by a crash. The torn tail can only ever be the
+// LAST record: a short read or garbage at the physical end of the file is
+// crash damage and gets cut. The same damage in the MIDDLE of the file is
+// real corruption — silently truncating there would discard acknowledged
+// data, so Open refuses with an error instead.
 func (st *Store) replayChunks() error {
 	f := st.chunksF
+	fi, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	fileSize := fi.Size()
 	var off int64
 	hdr := make([]byte, 4)
 	for {
 		if _, err := f.ReadAt(hdr, off); err != nil {
 			if err == io.EOF || err == io.ErrUnexpectedEOF {
-				break
+				break // torn tail: header cut short by a crash
 			}
 			return err
 		}
 		compLen := binary.LittleEndian.Uint32(hdr)
+		recEnd := off + 4 + int64(compLen)
 		if compLen == 0 || compLen > 1<<28 {
-			break // torn/garbage tail
+			if recEnd > fileSize {
+				break // torn tail: garbage length at the end
+			}
+			return fmt.Errorf("chunks.dat corrupt at offset %d (bad length %d): volume not opened", off, compLen)
 		}
 		comp := make([]byte, compLen)
 		if _, err := f.ReadAt(comp, off+4); err != nil {
-			break // torn tail
+			break // torn tail: body cut short by a crash
 		}
 		raw, err := st.dec.DecodeAll(comp, nil)
 		if err != nil {
-			break // corrupt tail; stop rather than guess
+			if recEnd == fileSize {
+				break // torn tail: last blob torn mid-write
+			}
+			return fmt.Errorf("chunks.dat corrupt at offset %d (undecodable): volume not opened", off)
 		}
 		h := sha256.Sum256(raw)
 		key := hex.EncodeToString(h[:])
 		st.chunkIdx[key] = &chunkLoc{off: off + 4, compLen: int(compLen), rawLen: len(raw)}
-		off += 4 + int64(compLen)
+		off = recEnd
 	}
 	// Truncate any torn tail so the file is clean for appends.
 	if err := f.Truncate(off); err != nil {
 		return err
 	}
-	_, err := f.Seek(0, io.SeekEnd)
+	_, err = f.Seek(0, io.SeekEnd)
 	return err
 }
 
 // replayManifest replays journal records, truncating a torn tail.
 // Slot records are last-write-wins; refcounts are derived from the final map.
+//
+// Like replayChunks, only the tail may be torn: a record that fails its CRC
+// (or parses as garbage) in the middle of the file is corruption of
+// acknowledged data, and Open fails loudly rather than silently discarding
+// everything after it.
 func (st *Store) replayManifest() error {
 	f := st.manifestF
 	data, err := io.ReadAll(f)
@@ -240,42 +261,64 @@ func (st *Store) replayManifest() error {
 	}
 	pos := 0
 	good := 0
-	for pos+8 <= len(data) {
+	for pos < len(data) {
+		if pos+8 > len(data) {
+			break // torn tail: header cut short by a crash
+		}
 		ln := int(binary.LittleEndian.Uint32(data[pos:]))
-		if ln <= 0 || ln > 64<<20 || pos+4+ln+4 > len(data) {
-			break // torn tail
+		recEnd := pos + 4 + ln + 4
+		if ln <= 0 || ln > 64<<20 {
+			if recEnd > len(data) {
+				break // torn tail: garbage length at the end
+			}
+			return fmt.Errorf("manifest.log corrupt at offset %d (bad length %d): volume not opened", pos, ln)
+		}
+		if recEnd > len(data) {
+			break // torn tail: body cut short by a crash
 		}
 		body := data[pos+4 : pos+4+ln]
 		crc := binary.LittleEndian.Uint32(data[pos+4+ln:])
 		if crc32.ChecksumIEEE(body) != crc {
-			break // torn tail
+			if recEnd == len(data) {
+				break // torn tail: last record torn mid-write
+			}
+			return fmt.Errorf("manifest.log corrupt at offset %d (CRC mismatch): volume not opened", pos)
 		}
 		var probe struct {
 			T string `json:"t"`
 		}
 		if err := json.Unmarshal(body, &probe); err != nil {
-			break
+			// CRC passed, so these bytes were fully written — but they
+			// aren't a record we ever write. That's corruption, not a crash.
+			return fmt.Errorf("manifest.log corrupt at offset %d (bad record): volume not opened", pos)
 		}
 		switch probe.T {
 		case "slot":
 			var r recSlot
-			if json.Unmarshal(body, &r) == nil {
-				if len(r.C) == 0 {
-					delete(st.slots, r.S)
-				} else {
-					st.slots[r.S] = r.C
-				}
+			if err := json.Unmarshal(body, &r); err != nil {
+				return fmt.Errorf("manifest.log corrupt at offset %d (bad slot record): volume not opened", pos)
+			}
+			if len(r.C) == 0 {
+				delete(st.slots, r.S)
+			} else {
+				st.slots[r.S] = r.C
 			}
 		case "size":
 			var r recSize
-			if json.Unmarshal(body, &r) == nil {
-				st.fileSize = r.N
+			if err := json.Unmarshal(body, &r); err != nil {
+				return fmt.Errorf("manifest.log corrupt at offset %d (bad size record): volume not opened", pos)
 			}
+			st.fileSize = r.N
 		case "high":
 			var r recHigh
-			if json.Unmarshal(body, &r) == nil && r.N > st.high {
+			if err := json.Unmarshal(body, &r); err != nil {
+				return fmt.Errorf("manifest.log corrupt at offset %d (bad high record): volume not opened", pos)
+			}
+			if r.N > st.high {
 				st.high = r.N
 			}
+		default:
+			return fmt.Errorf("manifest.log corrupt at offset %d (unknown record %q): volume not opened", pos, probe.T)
 		}
 		pos += 4 + ln + 4
 		good = pos
@@ -445,19 +488,23 @@ func (st *Store) WriteAt(p []byte, off int64) (int, error) {
 		plans = append(plans, slotPlan{slot: s, chunks: refs})
 	}
 
-	// Physical budget check BEFORE mutating anything.
+	// Physical budget check BEFORE mutating anything. The manifest estimate
+	// is exact: each slot record is measured by marshaling it, and the
+	// optional "high" record is measured too when it will be written.
 	var newBytes uint64
 	for _, comp := range staged {
 		newBytes += uint64(4 + len(comp))
 	}
-	// Estimate manifest growth: marshal each slot record once to measure.
 	var manBytes uint64
 	for _, pl := range plans {
 		rec := recSlot{T: "slot", S: pl.slot, C: pl.chunks}
 		body, _ := json.Marshal(rec)
 		manBytes += uint64(4 + len(body) + 4)
 	}
-	manBytes += 12 // possible "high" record
+	if end > st.high {
+		body, _ := json.Marshal(recHigh{T: "high", N: end})
+		manBytes += uint64(4 + len(body) + 4)
+	}
 	if st.physUsed+newBytes+manBytes > st.cfg.PhysicalSize {
 		return 0, ErrNoSpace
 	}
@@ -495,7 +542,9 @@ func (st *Store) WriteAt(p []byte, off int64) (int, error) {
 	}
 	if end > st.high {
 		st.high = end
-		st.appendRecord(recHigh{T: "high", N: st.high})
+		if _, err := st.appendRecord(recHigh{T: "high", N: st.high}); err != nil {
+			return 0, fmt.Errorf("journal write: %w", err)
+		}
 	}
 	if err := st.chunksF.Sync(); err != nil {
 		return 0, err

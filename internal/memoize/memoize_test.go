@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -147,5 +148,51 @@ func TestStatsPersist(t *testing.T) {
 	st := c2.Stats()
 	if st.Hits != 1 || st.Misses != 1 {
 		t.Fatalf("persisted stats hits=%d misses=%d", st.Hits, st.Misses)
+	}
+}
+
+func TestConcurrentRunRaceFree(t *testing.T) {
+	var runs atomic.Int64
+	exec := func(argv []string, stdin []byte) (Result, error) {
+		runs.Add(1)
+		time.Sleep(20 * time.Millisecond)
+		return Result{Stdout: []byte("same-output"), ExitCode: 0}, nil
+	}
+	c := testCache(t, exec)
+	const n = 16
+	var wg sync.WaitGroup
+	var hits, misses atomic.Int64
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			res, hit, err := c.Run([]string{"job"}, []byte("in"))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if !bytes.Equal(res.Stdout, []byte("same-output")) {
+				t.Errorf("wrong output: %q", res.Stdout)
+			}
+			if hit {
+				hits.Add(1)
+			} else {
+				misses.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("executed %d times, want exactly 1", got)
+	}
+	if misses.Load() != 1 || hits.Load() != n-1 {
+		t.Fatalf("misses=%d hits=%d, want 1/%d", misses.Load(), hits.Load(), n-1)
+	}
+	st := c.Stats()
+	if st.Hits != uint64(n-1) || st.Misses != 1 {
+		t.Fatalf("stats = %+v, want 1 miss and %d hits", st, n-1)
 	}
 }

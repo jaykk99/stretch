@@ -53,11 +53,20 @@ type Stats struct {
 // SavedBytes = bytes served from cache that otherwise would be re-downloaded.
 func (s Stats) SavedBytes() uint64 { return s.BytesServed }
 
+// call tracks one in-flight download so concurrent fetches of the same
+// URL share it instead of each paying for a transfer.
+type call struct {
+	done chan struct{}
+	body []byte
+	err  error
+}
+
 type Cache struct {
 	mu       sync.Mutex
 	dir      string
 	bodies   string
 	manifest map[string]urlEntry
+	inflight map[string]*call
 	client   *http.Client
 	enc      *zstd.Encoder
 	dec      *zstd.Decoder
@@ -81,7 +90,7 @@ func New(dir string, client *http.Client) (*Cache, error) {
 	if err != nil {
 		return nil, err
 	}
-	c := &Cache{dir: dir, bodies: bodies, manifest: make(map[string]urlEntry), client: client, enc: enc, dec: dec}
+	c := &Cache{dir: dir, bodies: bodies, manifest: make(map[string]urlEntry), inflight: make(map[string]*call), client: client, enc: enc, dec: dec}
 	if data, err := os.ReadFile(filepath.Join(dir, "manifest.json")); err == nil {
 		json.Unmarshal(data, &c.manifest)
 	}
@@ -119,53 +128,102 @@ func (c *Cache) readBody(hash string) ([]byte, bool) {
 
 // Fetch returns the URL's bytes. fromCache reports whether the network was
 // touched. With refresh=true the network is always used.
+//
+// The mutex is never held across network I/O: the cache is checked under
+// the lock, the download happens unlocked, and the result is committed
+// under the lock. Concurrent fetches of the same URL share one download —
+// the first caller downloads, the rest wait on it. Waiters avoided a
+// transfer, so they count as cache hits in the accounting.
 func (c *Cache) Fetch(url string, refresh bool) (data []byte, fromCache bool, err error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if !refresh {
 		if e, ok := c.manifest[url]; ok {
 			if body, ok := c.readBody(e.Hash); ok {
 				c.stats.CacheHits++
 				c.stats.BytesServed += uint64(len(body))
 				c.save()
+				c.mu.Unlock()
 				return body, true, nil
 			}
 			// Entry exists but body missing/corrupt: fall through to refetch.
 		}
+		if cl, ok := c.inflight[url]; ok {
+			c.mu.Unlock()
+			<-cl.done
+			if cl.err != nil {
+				return nil, false, cl.err
+			}
+			c.mu.Lock()
+			c.stats.CacheHits++
+			c.stats.BytesServed += uint64(len(cl.body))
+			c.save()
+			c.mu.Unlock()
+			return cl.body, true, nil
+		}
 	}
-	resp, err := c.client.Get(url)
-	if err != nil {
-		return nil, false, fmt.Errorf("fetch %s: %w", url, err)
+	cl := &call{done: make(chan struct{})}
+	if !refresh {
+		c.inflight[url] = cl
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, false, fmt.Errorf("fetch %s: HTTP %s", url, resp.Status)
+	c.mu.Unlock()
+
+	body, err := c.download(url)
+
+	c.mu.Lock()
+	if !refresh {
+		delete(c.inflight, url)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxBody+1))
+	hash := ""
+	if err == nil {
+		h := sha256.Sum256(body)
+		hash = hex.EncodeToString(h[:])
+		bp := c.bodyPath(hash)
+		if _, serr := os.Stat(bp); serr != nil {
+			tmp := bp + ".tmp"
+			if werr := os.WriteFile(tmp, c.enc.EncodeAll(body, nil), 0o644); werr != nil {
+				err = werr
+			} else if werr := os.Rename(tmp, bp); werr != nil {
+				err = werr
+			}
+		}
+	}
+	if err == nil {
+		c.manifest[url] = urlEntry{Hash: hash, Fetched: time.Now(), Size: int64(len(body))}
+		c.stats.URLs = len(c.manifest)
+		c.stats.NetworkFetches++
+		c.stats.BytesFetched += uint64(len(body))
+		c.save()
+	}
+	if !refresh {
+		cl.body, cl.err = body, err
+		close(cl.done)
+	}
+	c.mu.Unlock()
 	if err != nil {
 		return nil, false, err
 	}
-	if int64(len(body)) > MaxBody {
-		return nil, false, fmt.Errorf("body exceeds %d bytes, refused", MaxBody)
-	}
-	h := sha256.Sum256(body)
-	hash := hex.EncodeToString(h[:])
-	bp := c.bodyPath(hash)
-	if _, err := os.Stat(bp); err != nil {
-		tmp := bp + ".tmp"
-		if werr := os.WriteFile(tmp, c.enc.EncodeAll(body, nil), 0o644); werr != nil {
-			return nil, false, werr
-		}
-		if werr := os.Rename(tmp, bp); werr != nil {
-			return nil, false, werr
-		}
-	}
-	c.manifest[url] = urlEntry{Hash: hash, Fetched: time.Now(), Size: int64(len(body))}
-	c.stats.URLs = len(c.manifest)
-	c.stats.NetworkFetches++
-	c.stats.BytesFetched += uint64(len(body))
-	c.save()
 	return body, false, nil
+}
+
+// download performs the actual HTTP GET. No locks held: callers must not
+// call it with c.mu held.
+func (c *Cache) download(url string) ([]byte, error) {
+	resp, err := c.client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch %s: HTTP %s", url, resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxBody+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > MaxBody {
+		return nil, fmt.Errorf("body exceeds %d bytes, refused", MaxBody)
+	}
+	return body, nil
 }
 
 // Stats returns bandwidth accounting plus current disk usage.

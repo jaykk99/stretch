@@ -11,23 +11,70 @@ import (
 	"fmt"
 	mrand "math/rand"
 	"os"
+	"time"
 
+	"stretchstore/internal/cliutil"
 	"stretchstore/internal/memstore"
 	"stretchstore/internal/size"
 )
 
+// subcommands lists every top-level command, for help and completions.
+var subcommands = []string{"test", "help", "version", "completion"}
+
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "test" {
-		fmt.Print("stretchmem — compressed + deduplicated RAM. Honest physics: ~2-4:1 on typical data,\n~1:1 on random. The cap is a hard wall.\n\nUsage:\n  stretchmem test [--cap 512MB]\n")
-		if len(os.Args) >= 2 && os.Args[1] != "test" {
-			os.Exit(2)
-		}
-		return
+	if len(os.Args) < 2 {
+		usage()
+		os.Exit(2)
 	}
-	if err := cmdTest(os.Args[2:]); err != nil {
+	var err error
+	switch os.Args[1] {
+	case "test":
+		err = cmdTest(os.Args[2:])
+	case "version":
+		fmt.Println(cliutil.VersionLine("stretchmem"))
+	case "completion":
+		err = cmdCompletion(os.Args[2:])
+	case "-h", "--help", "help":
+		usage()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown command %q\n", os.Args[1])
+		usage()
+		os.Exit(2)
+	}
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+func usage() {
+	fmt.Print(`stretchmem — compressed + deduplicated RAM (userspace zram + KSM).
+
+Segments are split into 4KB pages; identical pages across all segments are
+stored once, zstd-compressed. Zero pages cost nothing.
+
+Honest physics: ~2-4:1 on typical data, ~1:1 on random (each page pays a
+few bytes of framing). The cap is a hard wall: writes that don't fit are
+refused, never silently dropped.
+
+Usage:
+  stretchmem test [--cap 512MB]
+  stretchmem version
+  stretchmem completion [bash|zsh|fish]   (shell completions on stdout)
+`)
+}
+
+func cmdCompletion(args []string) error {
+	shell := "bash"
+	if len(args) > 0 {
+		shell = args[0]
+	}
+	out, err := cliutil.Completion("stretchmem", subcommands, shell)
+	if err != nil {
+		return err
+	}
+	fmt.Print(out)
+	return nil
 }
 
 func cmdTest(args []string) error {
@@ -163,7 +210,8 @@ func cmdTest(args []string) error {
 	}
 	fmt.Printf(" OK\n")
 
-	fmt.Printf("      filling to the cap to prove the wall is real ...")
+	fmt.Printf("      filling to the cap to prove the wall is real ...\n")
+	prog := cliutil.NewProgress(os.Stdout, "fill", 5*time.Second)
 	fill := make([]byte, 4<<20)
 	refused := false
 	for i := 0; i < 1000; i++ {
@@ -178,7 +226,9 @@ func cmdTest(args []string) error {
 		} else if err != nil {
 			return err
 		}
+		prog.Add(uint64(len(fill)))
 	}
+	prog.Done()
 	if !refused {
 		return fmt.Errorf("cap never hit — test is wrong, not the physics")
 	}
@@ -186,7 +236,7 @@ func cmdTest(args []string) error {
 	if err := verify(aid, advers); err != nil {
 		return fmt.Errorf("post-cap integrity: %w", err)
 	}
-	fmt.Printf(" refused at %s (data intact)\n", size.Format(s.Stats().PhysicalUsed))
+	fmt.Printf("      refused at %s (data intact)\n", size.Format(s.Stats().PhysicalUsed))
 
 	fmt.Println("\n================ HONEST REPORT ================")
 	for _, r := range results {
