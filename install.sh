@@ -1,8 +1,10 @@
 #!/bin/sh
 # Stretch one-line installer.
 #
-#   curl -fsSL https://your-release-host/stretch/install.sh | sh
+# Once the first release is cut (v0.2.0, pending):
+#   curl -fsSL https://github.com/jaykk99/stretch/releases/download/v0.2.0/install.sh | sh
 #
+# Or point STRETCH_RELEASE_BASE at your own static host for the tarballs.
 # Detects OS/arch, downloads the matching prebuilt tarball, verifies its
 # SHA-256 checksum, and installs the four binaries to a user-local bin dir.
 #

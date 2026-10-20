@@ -16,32 +16,29 @@ hold at most N bytes of incompressible information (pigeonhole principle).
 Encrypted, video, already-compressed, or random data is ~1:1 everywhere —
 and every app below proves it with an adversarial test instead of hiding it.
 
-## Install (one line)
+## Install
+
+Build from source (works today — needs the Go toolchain, no network at
+runtime, ever):
 
 ```bash
-curl -fsSL https://your-release-host/stretch/install.sh | sh
-```
-
-`install.sh` detects your OS/arch, downloads the matching prebuilt tarball,
-verifies its SHA-256 checksum against `SHA256SUMS.txt`, installs the four
-binaries to `~/.local/bin` (or `$PREFIX/bin` on Termux), and prints the
-per-OS notes. Set `STRETCH_RELEASE_BASE` to wherever you host the release
-files (any static host works — the tarballs + checksums are in `dist/`):
-
-```bash
-curl -fsSL $STRETCH_RELEASE_BASE/install.sh | STRETCH_RELEASE_BASE=$STRETCH_RELEASE_BASE sh
-```
-
-No release host handy? Build from source (needs the Go toolchain, no network
-at runtime, ever):
-
-```bash
-./install.sh --from-source        # inside this repo
+git clone https://github.com/jaykk99/stretch.git && cd stretch
+./install.sh --from-source        # builds the four binaries, installs to ~/.local/bin (or $PREFIX/bin on Termux)
 # or manually:
 go build -o stretchstore ./cmd/stretchstore
 go build -o stretchmem   ./cmd/stretchmem
 go build -o stretchcpu   ./cmd/stretchcpu
 go build -o stretchnet   ./cmd/stretchnet
+```
+
+Prebuilt binaries will arrive with the first release (v0.2.0, pending —
+not cut yet), after which `install.sh` downloads the matching tarball for
+your OS/arch, verifies its SHA-256 checksum against `SHA256SUMS.txt`, and
+installs it. You can also host the tarballs anywhere and point
+`STRETCH_RELEASE_BASE` at it:
+
+```bash
+curl -fsSL $STRETCH_RELEASE_BASE/install.sh | STRETCH_RELEASE_BASE=$STRETCH_RELEASE_BASE sh
 ```
 
 ### Per-OS behavior
