@@ -91,9 +91,17 @@ stretchstore status --dir ./vol     # the truth: logical vs physical
 stretchstore mount  --dir ./vol --mp /mnt/stretch     # FUSE (Linux/macOS)
 stretchstore serve  --dir ./vol [--addr 127.0.0.1:8080]  # no-FUSE fallback
 stretchstore test                   # autonomous self-test, honest report
+stretchstore verify --dir ./vol     # integrity audit (chunk refs, journal CRCs)
+stretchstore prune  --dir ./vol     # garbage-collect orphaned chunks
 stretchstore version                # print version
 stretchstore completion [bash|zsh|fish]  # shell completions
 ```
+
+**Verify & prune.** Overwriting a slot orphans its old chunks — Verify reports
+them (plus any missing/corrupt chunks, slot-tiling errors, and journal CRC
+failures; exit code 1 on data problems), and Prune compacts `chunks.dat` down
+to the referenced chunks and reclaims the space, crash-safely (the old file
+is only replaced by an atomic rename once the new one is fsynced).
 
 **No-FUSE mode** (`serve`): the volume appears as a virtual `disk.img` over
 HTTP on localhost — Range reads, `PUT /disk.img?offset=N` writes, a minimal

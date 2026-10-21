@@ -4,6 +4,8 @@
 //	stretchstore create --logical 1000GB --physical 1GB [--dir ./vol]
 //	stretchstore mount   --dir ./vol --mp /mnt/stretch
 //	stretchstore status  --dir ./vol
+//	stretchstore verify  --dir ./vol
+//	stretchstore prune   --dir ./vol
 //	stretchstore test    [--dir ./vol] [--logical 1000GB] [--physical 1GB]
 package main
 
@@ -25,7 +27,7 @@ import (
 )
 
 // subcommands lists every top-level command, for help and completions.
-var subcommands = []string{"create", "mount", "status", "serve", "test", "help", "version", "completion"}
+var subcommands = []string{"create", "mount", "status", "verify", "prune", "serve", "test", "help", "version", "completion"}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -40,6 +42,10 @@ func main() {
 		err = cmdMount(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
+	case "verify":
+		err = cmdVerify(os.Args[2:])
+	case "prune":
+		err = cmdPrune(os.Args[2:])
 	case "serve":
 		err = cmdServe(os.Args[2:])
 	case "test":
@@ -86,6 +92,8 @@ Usage:
   stretchstore mount  --dir ./vol --mp /mnt/stretch   (FUSE; Linux/macOS)
   stretchstore serve  --dir ./vol [--addr 127.0.0.1:8080]  (HTTP/WebDAV fallback, all OSes)
   stretchstore status --dir ./vol
+  stretchstore verify --dir ./vol   (integrity audit: chunk refs, journal CRCs)
+  stretchstore prune  --dir ./vol   (garbage-collect orphaned chunks)
   stretchstore test   [--dir ./vol] [--logical 1000GB] [--physical 1GB]
   stretchstore version
   stretchstore completion [bash|zsh|fish]   (shell completions on stdout)
@@ -135,6 +143,61 @@ func cmdStatus(args []string) error {
 	}
 	defer st.Close()
 	printStatus(st.Status())
+	return nil
+}
+
+// cmdVerify audits a volume's integrity: every slot's chunk refs must point
+// at real, intact blobs, refs must tile their slots, and the journal must be
+// CRC-clean. Orphaned chunks are reported but are not a failure — they are
+// the expected waste that "prune" reclaims. Exits non-zero when data problems
+// are found.
+func cmdVerify(args []string) error {
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	dir := fs.String("dir", "", "volume directory")
+	fs.Parse(args)
+	if *dir == "" {
+		return fmt.Errorf("--dir is required")
+	}
+	st, err := store.Open(*dir)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	rep, err := st.Verify()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("integrity audit of %s\n\n%s", *dir, rep.Summary())
+	if !rep.OK() {
+		return fmt.Errorf("verify: volume has data-integrity problems (see above)")
+	}
+	return nil
+}
+
+// cmdPrune garbage-collects orphaned chunks: blobs in chunks.dat that no
+// slot references (leftovers of overwrites and crashed writes). The manifest
+// journal is untouched; every slot's data reads back identically afterwards.
+func cmdPrune(args []string) error {
+	fs := flag.NewFlagSet("prune", flag.ExitOnError)
+	dir := fs.String("dir", "", "volume directory")
+	fs.Parse(args)
+	if *dir == "" {
+		return fmt.Errorf("--dir is required")
+	}
+	st, err := store.Open(*dir)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	rep, err := st.Prune()
+	if err != nil {
+		return err
+	}
+	fmt.Printf("pruned %s\n", *dir)
+	fmt.Printf("  blobs kept:      %d\n", rep.BlobsKept)
+	fmt.Printf("  chunks removed:  %d (orphans)\n", rep.ChunksRemoved)
+	fmt.Printf("  chunks.dat:      %s -> %s (freed %s)\n",
+		size.Format(rep.BytesBefore), size.Format(rep.BytesAfter), size.Format(rep.BytesFreed))
 	return nil
 }
 
