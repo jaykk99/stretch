@@ -206,6 +206,14 @@ Cross-compile matrix (all `CGO_ENABLED=0`, static):
 The device smoke test is the matrix itself plus `go vet`: if all six targets
 compile and vet is clean, every device above can run the suite.
 
+Fuzz the chunker and benchmark the store's hot paths:
+
+```bash
+go test -fuzz='^FuzzChunk$' -fuzztime=60s ./internal/cdc/      # tiling, determinism
+go test -fuzz='^FuzzChunkResync$' -fuzztime=60s ./internal/cdc/ # resync after inserts
+go test -run=NONE -bench=. ./internal/store/                   # write/read/verify/prune
+```
+
 ## Design notes (stretchstore)
 
 - **Crash safety:** `chunks.dat` and `manifest.log` are append-only; blobs,

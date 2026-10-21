@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func testVolume(t *testing.T, logical, physical uint64) (*Store, string) {
+func testVolume(t testing.TB, logical, physical uint64) (*Store, string) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := Create(filepath.Join(dir, "vol"), logical, physical)
@@ -21,14 +21,14 @@ func testVolume(t *testing.T, logical, physical uint64) (*Store, string) {
 	return st, filepath.Join(dir, "vol")
 }
 
-func mustWrite(t *testing.T, st *Store, p []byte, off int64) {
+func mustWrite(t testing.TB, st *Store, p []byte, off int64) {
 	t.Helper()
 	if _, err := st.WriteAt(p, off); err != nil {
 		t.Fatalf("WriteAt(off=%d, len=%d): %v", off, len(p), err)
 	}
 }
 
-func mustRead(t *testing.T, st *Store, off int64, n int) []byte {
+func mustRead(t testing.TB, st *Store, off int64, n int) []byte {
 	t.Helper()
 	buf := make([]byte, n)
 	if _, err := st.ReadAt(buf, off); err != nil {
