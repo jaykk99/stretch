@@ -8,10 +8,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"stretchstore/internal/fusefs"
@@ -28,9 +30,13 @@ func cmdMount(args []string) error {
 		return fmt.Errorf("--dir and --mp are required")
 	}
 	if _, err := os.Stat("/dev/fuse"); err != nil {
-		return fmt.Errorf("%s", "no /dev/fuse on this machine — FUSE mount unavailable\n"+
-			"hint: on Chromebook Linux run: sudo apt install fuse3\n"+
-			"fallback: stretchstore serve --dir "+*dir+"  (HTTP/WebDAV file browser on localhost)")
+		if runtime.GOOS == "android" {
+			return errors.New("no /dev/fuse on this device — Termux has no FUSE without root\n" +
+				"fallback: stretchstore serve --dir " + *dir + "  (then open http://127.0.0.1:8080 on the device)")
+		}
+		return errors.New("no /dev/fuse on this machine — FUSE mount unavailable\n" +
+			"hint: on Chromebook Linux run: sudo apt install fuse3\n" +
+			"fallback: stretchstore serve --dir " + *dir + "  (HTTP/WebDAV file browser on localhost)")
 	}
 	st, err := store.Open(*dir)
 	if err != nil {

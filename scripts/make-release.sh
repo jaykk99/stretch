@@ -6,7 +6,7 @@
 # Requires: Go toolchain on PATH.
 set -eu
 
-VERSION="${1:-0.1.0}"
+VERSION="${1:-0.2.0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="$ROOT/dist"
 

@@ -1,15 +1,14 @@
 #!/bin/sh
 # Stretch one-line installer.
 #
-# Once the first release is cut (v0.2.0, pending):
-#   curl -fsSL https://github.com/jaykk99/stretch/releases/download/v0.2.0/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/jaykk99/stretch/main/install.sh | sh
 #
 # Or point STRETCH_RELEASE_BASE at your own static host for the tarballs.
 # Detects OS/arch, downloads the matching prebuilt tarball, verifies its
 # SHA-256 checksum, and installs the four binaries to a user-local bin dir.
 #
 # Env knobs:
-#   STRETCH_VERSION       version to install (default: 0.1.0)
+#   STRETCH_VERSION       version to install (default: 0.2.0)
 #   STRETCH_RELEASE_BASE  base URL hosting the release tarballs + SHA256SUMS.txt
 #                         (required unless --from-source)
 #   STRETCH_BINDIR        install dir override (default: ~/.local/bin, or $PREFIX/bin on Termux)
@@ -19,8 +18,8 @@
 #
 set -eu
 
-VERSION="${STRETCH_VERSION:-0.1.0}"
-BASE="${STRETCH_RELEASE_BASE:-https://github.com/jaykk99/stretch/releases/download/v0.1.0}"
+VERSION="${STRETCH_VERSION:-0.2.0}"
+BASE="${STRETCH_RELEASE_BASE:-https://github.com/jaykk99/stretch/releases/download/v$VERSION}"
 BINDIR="${STRETCH_BINDIR:-}"
 FROM_SOURCE=0
 [ "${1:-}" = "--from-source" ] && FROM_SOURCE=1

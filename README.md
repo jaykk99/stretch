@@ -16,10 +16,24 @@ hold at most N bytes of incompressible information (pigeonhole principle).
 Encrypted, video, already-compressed, or random data is ~1:1 everywhere —
 and every app below proves it with an adversarial test instead of hiding it.
 
-## Install
+## Install (one line)
 
-Build from source (works today — needs the Go toolchain, no network at
-runtime, ever):
+```bash
+curl -fsSL https://raw.githubusercontent.com/jaykk99/stretch/main/install.sh | sh
+```
+
+`install.sh` detects your OS/arch, downloads the matching prebuilt tarball
+from this repo's GitHub releases, verifies its SHA-256 checksum against
+`SHA256SUMS.txt`, installs the four binaries to `~/.local/bin` (or
+`$PREFIX/bin` on Termux), and prints the per-OS notes. Mirroring the release
+files elsewhere works too — point the script at the mirror:
+
+```bash
+curl -fsSL $STRETCH_RELEASE_BASE/install.sh | STRETCH_RELEASE_BASE=$STRETCH_RELEASE_BASE sh
+```
+
+No release download wanted? Build from source (needs the Go toolchain, no
+network at runtime, ever):
 
 ```bash
 git clone https://github.com/jaykk99/stretch.git && cd stretch
@@ -29,16 +43,6 @@ go build -o stretchstore ./cmd/stretchstore
 go build -o stretchmem   ./cmd/stretchmem
 go build -o stretchcpu   ./cmd/stretchcpu
 go build -o stretchnet   ./cmd/stretchnet
-```
-
-Prebuilt binaries will arrive with the first release (v0.2.0, pending —
-not cut yet), after which `install.sh` downloads the matching tarball for
-your OS/arch, verifies its SHA-256 checksum against `SHA256SUMS.txt`, and
-installs it. You can also host the tarballs anywhere and point
-`STRETCH_RELEASE_BASE` at it:
-
-```bash
-curl -fsSL $STRETCH_RELEASE_BASE/install.sh | STRETCH_RELEASE_BASE=$STRETCH_RELEASE_BASE sh
 ```
 
 ### Per-OS behavior
@@ -59,21 +63,28 @@ degrades gracefully: it never crashes, it tells you exactly what to run instead.
 ```bash
 # in the Linux terminal:
 sudo apt update && sudo apt install -y fuse3   # for kernel mounts (optional)
-curl -fsSL $STRETCH_RELEASE_BASE/install.sh | STRETCH_RELEASE_BASE=$STRETCH_RELEASE_BASE sh
+curl -fsSL https://raw.githubusercontent.com/jaykk99/stretch/main/install.sh | sh
 ~/.local/bin/stretchstore create --logical 1000GB --physical 1GB --dir ~/vol
 ~/.local/bin/stretchstore mount --dir ~/vol --mp ~/mnt/stretch   # needs fuse3
 # ...or without fuse3:
 ~/.local/bin/stretchstore serve --dir ~/vol   # browse at http://127.0.0.1:8080
 ```
 
-### Android (Termux)
+### Android / ARM64 (Termux)
+
+Notes for Android/ARM64:
+
+- Termux: no FUSE without root; use the fallback:
+  `stretchstore serve --dir ./vol`   (then open http://127.0.0.1:8080 on the device)
+- `stretchmem`, `stretchcpu`, `stretchnet` work identically on every OS (no FUSE involved).
+- Self-tests: `stretchstore test` | `stretchmem test` | `stretchcpu test` | `stretchnet test`
 
 ```bash
 pkg install -y curl
-curl -fsSL $STRETCH_RELEASE_BASE/install.sh | STRETCH_RELEASE_BASE=$STRETCH_RELEASE_BASE sh
+curl -fsSL https://raw.githubusercontent.com/jaykk99/stretch/main/install.sh | sh
 # installer detects Termux and picks the android/arm64 build, installs to $PREFIX/bin
 stretchstore create --logical 100GB --physical 512MB --dir ~/vol
-stretchstore serve --dir ~/vol --addr 127.0.0.1:8080
+stretchstore serve --dir ./vol
 # open http://127.0.0.1:8080 in the device browser
 ```
 
