@@ -88,7 +88,7 @@ else
   echo "downloading $NAME.tar.gz ..."
   fetch "$BASE/$NAME.tar.gz" "$TMP/pkg.tar.gz"
   fetch "$BASE/SHA256SUMS.txt" "$TMP/SHA256SUMS.txt"
-  want="$(grep " $NAME.tar.gz\$" "$TMP/SHA256SUMS.txt" | cut -d' ' -f1)"
+  want="$(awk -v file="$NAME.tar.gz" '$2 == file && length($1) == 64 && $1 ~ /^[0-9a-f]+$/ { print $1 }' "$TMP/SHA256SUMS.txt")"
   [ -n "$want" ] || { echo "error: no checksum entry for $NAME.tar.gz" >&2; exit 1; }
   got="$(sha256_of "$TMP/pkg.tar.gz")"
   [ "$want" = "$got" ] || { echo "error: SHA-256 mismatch! refusing to install." >&2
