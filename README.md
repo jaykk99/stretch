@@ -307,3 +307,40 @@ microcontrollers are not supported by this command-line launcher.
 Tests: python -m unittest test_stretch_model -v. CI also attempts a real
 small-model generation on Linux. Cross-platform test coverage does not
 substitute for a physical Android/Chromebook inference test.
+
+
+### Low-memory execution and layer streaming
+
+GGUF on a constrained device:
+
+    python stretch_model.py /path/to/model.gguf --disk-mode --context 512 --prompt "Hello"
+
+The launcher probes the installed llama.cpp's actual flags. With modern
+versions it enables mmap and lazy tensor reads (only tensors supported by
+the runtime), disables weight repacking and warmup, bounds inference batch
+sizes, and disables additional prompt caching where available. Older runtimes
+fall back to advertised mmap flags. A one-shot prompt retries once at reduced
+context after a possible memory allocation failure; --no-retry disables that.
+Interactive sessions are not replayed. This is OS page-cache management, not
+a custom GGUF layer scheduler or a guaranteed RAM cap.
+
+Optional true module-level disk offload for local safetensors models, on
+systems with compatible PyTorch wheels (desktop Linux/macOS/Windows):
+
+    python -m pip install torch transformers accelerate safetensors
+    python stretch_stream.py /path/to/local-model --offload-dir /path/to/ssd --ram-mib 2048 --plan
+    python stretch_stream.py /path/to/local-model --offload-dir /path/to/ssd --ram-mib 2048 --prompt "Hello"
+
+This builds an empty model to infer a CPU/disk device map, loads safe tensor
+checkpoints, and uses Accelerate's execution hooks to bring disk-offloaded
+weights into memory on demand. Temporary offload files are cleaned after
+normal completion. KV caching is disabled to reduce persistent memory.
+A CPU layer and working buffers must still fit; no total RSS guarantee.
+--require-offload refuses runs where all weights fit in RAM. Disk offload can
+be very slow, especially without an SSD. No remote custom model code is
+executed. The optional backend is not yet supported on Termux/iOS. It uses
+ordinary safetensors, not GGUF or arbitrary model formats.
+
+Run the real synthetic Transformer smoke test with:
+
+    python smoke_stretch_stream.py
