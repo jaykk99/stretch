@@ -209,6 +209,73 @@ def quantize(model, root, level):
     finally:
         out.unlink(missing_ok=True)
 
+
+def runtime_features(cli):
+    """Discover flags instead of assuming a particular llama.cpp version."""
+    result = subprocess.run([cli, "--help"], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, timeout=20)
+    return set(re.findall(r"(?<![\w-])--[a-z][a-z0-9-]*", result.stdout or ""))
+
+def low_memory_flags(features, ctx, attempt=0):
+    flags = []
+    if "--load-mode" in features:
+        flags += ["--load-mode", "mmap"]
+    elif "--mmap" in features:
+        flags += ["--mmap"]
+    if "--lazy-mode" in features:
+        flags += ["--lazy-mode", "on"]
+    for flag in ("--no-repack", "--no-warmup"):
+        if flag in features:
+            flags.append(flag)
+    if "--cache-ram" in features:
+        flags += ["--cache-ram", "0"]
+    if "--ctx-checkpoints" in features:
+        flags += ["--ctx-checkpoints", "0"]
+    batch = min(ctx, 128 if attempt == 0 else 32)
+    if "--batch-size" in features:
+        flags += ["--batch-size", str(batch)]
+    if "--ubatch-size" in features:
+        flags += ["--ubatch-size", str(min(batch, 32 if attempt == 0 else 8))]
+    # K-cache quantization is optional; leave V unchanged for broad compatibility.
+    if attempt and "--cache-type-k" in features:
+        flags += ["--cache-type-k", "q8_0"]
+    return flags
+
+def disk_inference(cmd, cli, ctx, prompt, retries=True):
+    features = runtime_features(cli)
+    if not ({"--load-mode", "--mmap"} & features):
+        raise ValueError("Runtime does not advertise mmap support; install a recent llama.cpp.")
+    # Environment variables can otherwise override memory mapping or lock pages.
+    env = {k:v for k,v in os.environ.items() if not k.startswith("LLAMA_ARG_")}
+    for attempt, context in enumerate([ctx, max(128, ctx//2)] if retries and prompt is not None and ctx > 128 else [ctx]):
+        current = list(cmd)
+        current[current.index("-c")+1] = str(context)
+        current += low_memory_flags(features, context, attempt)
+        print(json.dumps({"disk_attempt": attempt+1, "context": context,
+                          "lazy_tensors": "--lazy-mode" in features,
+                          "runtime_flags": low_memory_flags(features, context, attempt)}),
+              file=sys.stderr, flush=True)
+        if prompt is None:
+            return subprocess.call(current, env=env)
+        # Preserve output as it occurs and spool stderr to disk, not RAM.
+        with tempfile.TemporaryFile() as diagnostic:
+            result = subprocess.run(current, env=env, stderr=diagnostic)
+            diagnostic.seek(0, os.SEEK_END)
+            diagnostic.seek(max(0, diagnostic.tell()-65536))
+            tail = diagnostic.read().decode("utf-8", errors="replace")
+            print(tail, file=sys.stderr, end="")
+        status = result.returncode
+        if status == 0:
+            return 0
+        oom = status in (-9, 137) or bool(re.search(
+            r"out of memory|cannot allocate memory|bad_alloc|failed to allocate|not enough memory",
+            tail, re.I))
+        if not oom or attempt or context <= 128 or not retries:
+            return status
+        print("Possible memory exhaustion; retrying once with smaller context/batches. Partial output may repeat.", file=sys.stderr)
+    return status
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model", help="local GGUF, HTTPS GGUF URL, or HF owner/repo")
@@ -217,6 +284,7 @@ def main(argv=None):
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--disk-mode", action="store_true", help="allow oversize mmap experiment; may be slow or fail")
     parser.add_argument("--context", type=int)
+    parser.add_argument("--no-retry", action="store_true", help="disable memory-pressure retry")
     parser.add_argument("--ram-mib", type=int, help="manual upper bound on available RAM")
     parser.add_argument("--sha256")
     parser.add_argument("--quantize", choices=["Q8_0","Q5_K_M","Q4_K_M","Q3_K_M","Q2_K"])
@@ -271,6 +339,8 @@ def main(argv=None):
         # llama.cpp enables mmap by default; no mlock or artificial swap changes.
         if args.prompt is not None:
             cmd += ["-p", args.prompt, "--no-conversation"]
+        if args.disk_mode:
+            return disk_inference(cmd, cli, ctx, args.prompt, not args.no_retry)
         return subprocess.call(cmd)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
         print("stretch-model:", error, file=sys.stderr)
