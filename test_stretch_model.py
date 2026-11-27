@@ -56,5 +56,34 @@ class DeviceTests(unittest.TestCase):
                 self.assertEqual(sm.main([str(p), "--cache", d]), 1)
                 build.assert_not_called()
 
+
+    def test_lazy_disk_flags_and_older_runtime(self):
+        f = {"--load-mode", "--lazy-mode", "--no-repack", "--no-warmup",
+             "--batch-size", "--ubatch-size", "--cache-ram", "--cache-type-k"}
+        flags = sm.low_memory_flags(f, 512, 1)
+        self.assertEqual(flags[flags.index("--load-mode")+1], "mmap")
+        self.assertEqual(flags[flags.index("--lazy-mode")+1], "on")
+        self.assertEqual(flags[flags.index("--ubatch-size")+1], "8")
+        self.assertEqual(flags[flags.index("--cache-ram")+1], "0")
+        self.assertEqual(sm.low_memory_flags({"--mmap"}, 512), ["--mmap"])
+
+    def test_disk_retry_only_on_memory_failure(self):
+        import subprocess
+        from unittest.mock import Mock
+        cmd = ["cli", "-m", "example", "-c", "512"]
+        def simulated(current, **kwargs):
+            if current[current.index("-c")+1] == "512":
+                kwargs["stderr"].write(b"cannot allocate memory")
+                return subprocess.CompletedProcess(current, 1)
+            return subprocess.CompletedProcess(current, 0)
+        with patch.object(sm, "runtime_features", return_value={"--mmap"}), \
+             patch.object(sm.subprocess, "run", side_effect=simulated) as run:
+            self.assertEqual(sm.disk_inference(cmd, "cli", 512, "hello"), 0)
+            self.assertEqual(run.call_count, 2)
+        with patch.object(sm, "runtime_features", return_value={"--mmap"}), \
+             patch.object(sm.subprocess, "run", return_value=subprocess.CompletedProcess(cmd, 2)) as run:
+            self.assertEqual(sm.disk_inference(cmd, "cli", 512, "hello"), 2)
+            self.assertEqual(run.call_count, 1)
+
 if __name__ == "__main__":
     unittest.main()
