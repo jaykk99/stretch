@@ -1,0 +1,39 @@
+name: Adaptive local model runtime
+on:
+  pull_request:
+  push:
+    branches: [adaptive-local-model-runtime]
+jobs:
+  portability:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest test_stretch_model -v
+  real-inference:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build real runtime, download verified tiny model and generate
+        run: python stretch_model.py https://huggingface.co/ggml-org/tiny-llamas/resolve/def3e2dd70df35ecbf6403ea347de4c5977220c1/stories260K.gguf --sha256 047bf46455a544931cff6fef14d7910154c56afbc23ab1c5e56a72e69912c04b --context 128 --prompt "Once upon a time" --tokens 8
+
+  layer-streaming:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install "transformers>=4.48,<5" "accelerate>=1.3,<2" safetensors
+      - run: python smoke_stretch_stream.py
